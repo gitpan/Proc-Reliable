@@ -57,10 +57,11 @@ Option settings below represent defaults
  $p->pattern_stdout($pat);   # require STDOUT to match regex $pat
  $p->pattern_stderr($pat);   # require STDERR to match regex $pat
  $p->allow_shell(1);         # allowed to use shell for operation
- $p->child_exit_time(0.1);   # timeout for child to exit after it closes stdout
- $p->sigterm_exit_time(0.1); # timeout for child to exit after sigterm
- $p->sigkill_exit_time(0.1); # timeout for child to exit after sigkill
+ $p->child_exit_time(1.0);   # timeout for child to exit after it closes stdout
+ $p->sigterm_exit_time(0.5); # timeout for child to exit after sigterm
+ $p->sigkill_exit_time(0.5); # timeout for child to exit after sigkill
  $p->input_chunking(0);      # feed stdin data line-by-line to subprocess
+ $p->stdin_error_ok(0);      # ok if child exits without reading all stdin
 
 Getting output
 
@@ -151,7 +152,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.10';
+$VERSION = '1.13';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
@@ -170,10 +171,11 @@ my %intdefaults = ("maxtime"          => 60,
 		   "accept_no_error"  => 0,
 		   "pattern_stdout"   => undef,
 		   "pattern_stderr"   => undef,
-		   "child_exit_time"  => 0.1,
-		   "sigterm_exit_time" => 0.1,
-		   "sigkill_exit_time" => 0.1,
+		   "child_exit_time"  => 1.0,
+		   "sigterm_exit_time" => 0.5,
+		   "sigkill_exit_time" => 0.5,
 		   "input_chunking"    => 0,
+		   "stdin_error_ok"    => 0,
 		   "in_after_out_closed" => 1,
 		  );
 
@@ -359,6 +361,12 @@ sub run {
   # initialize object output variables
   $self->{msg} = undef;
   
+  my($fileno_getstdout,
+     $fileno_getstderr,
+     $fileno_getstdin,
+     $fileno_putstdout,
+     $fileno_putstderr,
+     $fileno_putstdin);
   while(1) {
     $Debug && $self->_dprt("ATTEMPT $ntry: '$cmdstr' ");
 
@@ -368,24 +376,30 @@ sub run {
     $self->{status} = undef;
     
     # set up pipes to collect STDOUT and STDERR from child process
-    pipe(GETSTDOUT,PUTSTDOUT);
-    pipe(GETSTDERR,PUTSTDERR);
-    \*PUTSTDOUT->autoflush(1);
-    \*PUTSTDERR->autoflush(1);
-    
+    pipe(GETSTDOUT,PUTSTDOUT) || die("couldn't create pipe 1");
+    pipe(GETSTDERR,PUTSTDERR) || die("couldn't create pipe 2");
+    $fileno_getstdout = fileno(GETSTDOUT) || die("couldn't get fileno 1");
+    $fileno_getstderr = fileno(GETSTDERR) || die("couldn't get fileno 2");
+    $fileno_putstdout = fileno(PUTSTDOUT) || die("couldn't get fileno 3");
+    $fileno_putstderr = fileno(PUTSTDERR) || die("couldn't get fileno 4");
+    PUTSTDOUT->autoflush(1);
+    PUTSTDERR->autoflush(1);
     if(defined($inputref)) {
-      pipe(GETSTDIN,PUTSTDIN);
-      \*PUTSTDIN->autoflush(1);
+      pipe(GETSTDIN,PUTSTDIN) || die("couldn't create pipe 3");
+      $fileno_getstdin = fileno(GETSTDIN) || die("couldn't get fileno 5");
+      $fileno_putstdin = fileno(PUTSTDIN) || die("couldn't get fileno 6");
+      PUTSTDIN->autoflush(1);
     }
     
     # fork starts a child process, returns pid for parent, 0 for child
-    \*STDOUT->flush();   # don't dup a non-empty buffer
+    STDOUT->flush();   # don't dup a non-empty buffer
     $redo = 0;
 
     ##### PARENT PROCESS #####
     if($pid = fork()) {
       # close the ends of the pipes the child will be using
-      close(PUTSTDOUT); close(PUTSTDERR);
+      close(PUTSTDOUT);
+      close(PUTSTDERR);
       if(defined($inputref)) {
 	close(GETSTDIN);
       }
@@ -411,12 +425,14 @@ sub run {
 	my($stdoutdone, $stderrdone, $stdindone);
 	my($nfound, $fdopen, $bytestodo, $blocksize, $s);
 	my($rin, $rout, $win, $wout, $ein, $eout, $gotread);
-	vec($rin, fileno(GETSTDOUT), 1) = 1;
-	vec($rin, fileno(GETSTDERR), 1) = 1;
+# bug: occational death with: 'Modification of a read-only value attempted at /home/public/dgold/acsim//Proc/Reliable.pm line 416.'
+	vec($rin, $fileno_getstdout, 1) = 1;
+	vec($rin, $fileno_getstderr, 1) = 1;
 	$blocksize = (stat(GETSTDOUT))[11];
 	$fdopen = 2;  # stdout and stderr
 	if(defined($inputref)) {
-	  vec($win, fileno(PUTSTDIN), 1) = 1;
+# bug: same bug here
+	  vec($win, $fileno_putstdin, 1) = 1;
 	  $stdinlen = length($$inputref);
 	  if($self->in_after_out_closed()) {
 	    $fdopen++;
@@ -426,7 +442,7 @@ sub run {
 	while($fdopen) {
 	  $nfound = select($rout=$rin, $wout=$win, $eout=$ein, undef);
 	  
-	  if(vec($wout, fileno(PUTSTDIN), 1)) {  # ready to write
+	  if(vec($wout, $fileno_putstdin, 1)) {  # ready to write
 	    #print("write ready\n");
 	    my($indone) = 0;
 	    if($self->input_chunking()) {
@@ -436,7 +452,14 @@ sub run {
 		$stdinlen = length($inputline);
 		#print("writing $stdinlen '$inputline'\n");
 		$s = syswrite(PUTSTDIN, $inputline, $stdinlen, 0);
-		defined($s) || croak("failure writing to subprocess: $!");
+		unless(defined($s)) {  # stdin closed by child
+		  if($self->stdin_error_ok()) {
+		    $indone = 1;
+		  }
+		  else {
+		    croak("failure writing to subprocess: $!");
+		  }
+		}
 		if(scalar(@inputlines) == 0) { # finished writing all data
 		  $indone = 1;
 		}
@@ -459,24 +482,24 @@ sub run {
 	      }
 	    }
 	  }
-	  if(vec($rout, fileno(GETSTDOUT), 1)) {  # ready to read
+	  if(vec($rout, $fileno_getstdout, 1)) {  # ready to read
 	    $gotread = 1;
 	    $s = sysread(GETSTDOUT, $self->{stdout}, $blocksize, $stdoutdone);
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stdoutdone += $s;  # number of bytes actually read
 	    unless($s) {
-	      vec($rin, fileno(GETSTDOUT), 1) = 0;  # don't select this descriptor anymore
+	      vec($rin, $fileno_getstdout, 1) = 0;  # don't select this descriptor anymore
 	      close(GETSTDOUT);
 	      $fdopen--;
 	    }
 	  }
-	  if(vec($rout, fileno(GETSTDERR), 1)) {  # ready to read
+	  if(vec($rout, $fileno_getstderr, 1)) {  # ready to read
 	    $gotread = 1;
 	    $s = sysread(GETSTDERR, $self->{stderr}, $blocksize, $stderrdone);
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stderrdone += $s;  # number of bytes actually read
 	    unless($s) {
-	      vec($rin, fileno(GETSTDERR), 1) = 0;  # don't select this descriptor anymore
+	      vec($rin, $fileno_getstderr, 1) = 0;  # don't select this descriptor anymore
 	      close(GETSTDERR);
 	      $fdopen--;
 	    }
@@ -511,33 +534,33 @@ sub run {
       # normally child will exit shortly unless eval failed via SIGALRM.
       # if eval() succeeded, wait up to child_exit_time for child to exit
       my($s) = 0;
-      while(!$redo && !defined($self->{status}) && ($s < $self->child_exit_time)) {
+      while(!$redo && !defined($self->{status}) && kill(0, $pid) && ($s < $self->child_exit_time)) {
 	#print("waiting for exit\n");
 	select(undef, undef, undef, $_WAIT_INCR_SEC);
 	$s += $_WAIT_INCR_SEC;
       }
       
       # if child has not exited yet, send sigterm.
-      if(!defined($self->{status}) && $self->sigterm_exit_time) {  # child still alive
+      if(!defined($self->{status}) && kill(0, $pid) && $self->sigterm_exit_time) {  # child still alive
 	#print("sending term\n");
 	kill('TERM', $pid);
       }
 
       # wait until process exits or wait-time is exceeded.
       $s = 0;
-      while(!defined($self->{status}) && ($s < $self->sigterm_exit_time)) {
+      while(!defined($self->{status}) && kill(0, $pid) && ($s < $self->sigterm_exit_time)) {
 	select(undef, undef, undef, $_WAIT_INCR_SEC);
 	$s += $_WAIT_INCR_SEC;
       }
 
-      if(!defined($self->{status}) && $self->sigkill_exit_time) {  # child still alive
+      if(!defined($self->{status}) && kill(0, $pid) && $self->sigkill_exit_time) {  # child still alive
 	#print("sending kill\n");
 	kill('KILL', $pid);
       }
 
       # wait until process exits or wait-time is exceeded.
       $s = 0;
-      while(!defined($self->{status}) && ($s < $self->sigkill_exit_time)) {
+      while(!defined($self->{status}) && kill(0, $pid) && ($s < $self->sigkill_exit_time)) {
 	select(undef, undef, undef, $_WAIT_INCR_SEC);
 	$s += $_WAIT_INCR_SEC;
       }
@@ -546,7 +569,18 @@ sub run {
       #print("sigs 3: ",$SIG{ALRM}," , ",$SIG{PIPE}," , ",$SIG{CHLD},"\n");
       
       if(!defined($self->{status})) {
-	croak("unable to kill subprocess $pid");
+	if(kill(0, $pid)) {
+	  # get here if unable to kill or if coredump takes longer than sigkill_exit_time
+	  $self->{msg} .= "unable to kill subprocess $pid";
+	}
+	$self->{status} = -1;
+	$self->{msg} .= "no return status from subprocess\n";
+      }
+      else {
+	if(kill(0, $pid)) {
+	  # most likely coredumping?
+	  $self->{msg} .= "got return status but subprocess still alive\n";
+	}
       }
    }
 

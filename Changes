@@ -1,5 +1,11 @@
 Revision history for Perl extension Proc::Reliable
 
+1.13  2003/3/14 01:50:00 dan goldwater
+	- added stdin_error_ok option
+	- fix bug with killing processes
+	- changed default wait time after killing
+	- check more return status
+
 1.10  2002/4/1 10:00:00 dan goldwater
 	- add input_chunking feature
 	- fix bug with stdin data processing
