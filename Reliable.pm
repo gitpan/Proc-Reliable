@@ -154,7 +154,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.14';
+$VERSION = '1.15';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
@@ -434,7 +434,9 @@ sub run {
 	my($stdinlen);
 	my($stdoutdone, $stderrdone, $stdindone) = (0, 0, 0);
 	my($nfound, $fdopen, $bytestodo, $blocksize, $s);
-	my($rin, $rout, $win, $wout, $ein, $eout, $gotread) = (0, 0, 0, 0, 0, 0, 0);
+	my($rin, $win, $ein) = ('', '', '');
+	my($rout, $wout, $eout) = ('', '', '');
+	my($gotread) = 0;
 # bug: occational death with: 'Modification of a read-only value attempted at /home/public/dgold/acsim//Proc/Reliable.pm line 416.'
 	vec($rin, $fileno_getstdout, 1) = 1;
 	vec($rin, $fileno_getstderr, 1) = 1;
@@ -448,7 +450,6 @@ sub run {
 	    $fdopen++;
 	  }
 	}
-	
 	my $cbStdout = $self->{stdout_cb};
 	my $cbStderr = $self->{stderr_cb};
 	my ($outs,$oute);
@@ -456,7 +457,7 @@ sub run {
 	  $nfound = select($rout=$rin, $wout=$win, $eout=$ein, undef);
 
 	  if(defined($win) && vec($wout, $fileno_putstdin, 1)) {  # ready to write
-	    print("write ready\n");
+	    #print("write ready\n");
 	    my($indone) = 0;
 	    if($self->input_chunking()) {
 	      if($gotread) {
@@ -594,7 +595,7 @@ sub run {
 	$s += $_WAIT_INCR_SEC;
       }
 
-      $SIG{CHLD} = $oldsigchld;
+      $SIG{CHLD} = $oldsigchld;  # why is this giving '-w' warning?
 
       #print("sigs 3: ",$SIG{ALRM}," , ",$SIG{PIPE}," , ",$SIG{CHLD},"\n");
       

@@ -6,8 +6,8 @@ $i = 0;
 while($line = <STDIN>) {
     print("got $i: '$line'\n");
     $i++;
-    if($i > 3) {
-	last;
-    }
+    #if($i > 3) {  # intentionally cause sigpipe
+	#last;
+    #}
 }
 

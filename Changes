@@ -1,5 +1,8 @@
 Revision history for Perl extension Proc::Reliable
 
+1.15  2003/11/7 16:00:00 dan goldwater
+	- fixed 1.14 regression
+
 1.14  2003/10/9 14:00:00 dan goldwater / jason robertson
 	- fixed known bug of fast-exiting children not getting detected
 	- added option for stdout and stderr callbacks
