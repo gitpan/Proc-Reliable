@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 
 # test program for Proc::Reliable.
-# runs the 'test2' program as a subprocess.
+# runs the 'test1slave' program as a subprocess.
 
 my($PROGRAMDIR, $PROGRAMFILE);  # dir/file executed by user
 BEGIN {
@@ -31,7 +31,7 @@ for($i=0; $i<5; $i++) {
     $stdin .= "this is a test of the stdin transmission system $i\n";
 }
 print("stdin size: ",length($stdin),"\n");
-($out, $err, $status, $msg) = $myproc->run("./test2", $stdin);
+($out, $err, $status, $msg) = $myproc->run("./test1slave", $stdin);
 #$out = $myproc->run("./test2", $stdin);
 #$myproc->run("./test2", $stdin);
 #$out = $myproc->stdout();

@@ -1,6 +1,9 @@
 Changes
 MANIFEST
+README
 Makefile.PL
 Reliable.pm
-test1
-test2
+test1master
+test1slave
+test2master
+test2slave

@@ -60,6 +60,7 @@ Option settings below represent defaults
  $p->child_exit_time(0.1);   # timeout for child to exit after it closes stdout
  $p->sigterm_exit_time(0.1); # timeout for child to exit after sigterm
  $p->sigkill_exit_time(0.1); # timeout for child to exit after sigkill
+ $p->input_chunking(0);      # feed stdin data line-by-line to subprocess
 
 Getting output
 
@@ -150,7 +151,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.04';
+$VERSION = '1.10';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
@@ -171,7 +172,9 @@ my %intdefaults = ("maxtime"          => 60,
 		   "pattern_stderr"   => undef,
 		   "child_exit_time"  => 0.1,
 		   "sigterm_exit_time" => 0.1,
-		   "sigkill_exit_time" => 0.1
+		   "sigkill_exit_time" => 0.1,
+		   "input_chunking"    => 0,
+		   "in_after_out_closed" => 1,
 		  );
 
 ######################################################################
@@ -310,14 +313,19 @@ sub run {
   else {
     $cmdstr = $cmd;
   }
-  
-  my($inputref);
-  if(ref($input)) {
-    # user can input either a scalar or a scalar ref for input data
-    $inputref = $input;
-  }
-  else {
-    $inputref = \$input;
+
+  my($inputref, @inputlines);
+  if(defined($input)) {
+    if(ref($input)) {
+      # user can input either a scalar or a scalar ref for input data
+      $inputref = $input;
+    }
+    else {
+      $inputref = \$input;
+    }
+    if($self->input_chunking()) {
+      @inputlines = split(/\n/, $$inputref);
+    }
   }
 
   # if user has set want_single_list then do what they specify,
@@ -402,7 +410,7 @@ sub run {
 	my($stdinlen);
 	my($stdoutdone, $stderrdone, $stdindone);
 	my($nfound, $fdopen, $bytestodo, $blocksize, $s);
-	my($rin, $rout, $win, $wout, $ein, $eout);
+	my($rin, $rout, $win, $wout, $ein, $eout, $gotread);
 	vec($rin, fileno(GETSTDOUT), 1) = 1;
 	vec($rin, fileno(GETSTDERR), 1) = 1;
 	$blocksize = (stat(GETSTDOUT))[11];
@@ -410,24 +418,49 @@ sub run {
 	if(defined($inputref)) {
 	  vec($win, fileno(PUTSTDIN), 1) = 1;
 	  $stdinlen = length($$inputref);
-	  $fdopen++;
+	  if($self->in_after_out_closed()) {
+	    $fdopen++;
+	  }
 	}
 	
 	while($fdopen) {
 	  $nfound = select($rout=$rin, $wout=$win, $eout=$ein, undef);
 	  
 	  if(vec($wout, fileno(PUTSTDIN), 1)) {  # ready to write
-	    $bytestodo = min($blocksize, $stdinlen - $stdindone);
-	    $s = syswrite(PUTSTDIN, $$inputref, $bytestodo, $stdindone);
-	    defined($s) || croak("failure writing to subprocess: $!");
-	    $stdindone += $s;  # number of bytes actually written
-	    if($stdindone >= $stdinlen) {  # finished writing all data
+	    #print("write ready\n");
+	    my($indone) = 0;
+	    if($self->input_chunking()) {
+	      if($gotread) {
+		$gotread = 0;
+		my($inputline) = shift(@inputlines) . "\n";
+		$stdinlen = length($inputline);
+		#print("writing $stdinlen '$inputline'\n");
+		$s = syswrite(PUTSTDIN, $inputline, $stdinlen, 0);
+		defined($s) || croak("failure writing to subprocess: $!");
+		if(scalar(@inputlines) == 0) { # finished writing all data
+		  $indone = 1;
+		}
+	      }
+	    }
+	    else {
+	      $bytestodo = min($blocksize, $stdinlen - $stdindone);
+	      $s = syswrite(PUTSTDIN, $$inputref, $bytestodo, $stdindone);
+	      defined($s) || croak("failure writing to subprocess: $!");
+	      $stdindone += $s;  # number of bytes actually written
+	      if($stdindone >= $stdinlen) {  # finished writing all data
+		$indone = 1;
+	      }
+	    }
+	    if($indone) {
 	      $win = undef;  # don't select this descriptor anymore
 	      close(PUTSTDIN);
-	      $fdopen--;
+	      if($self->in_after_out_closed()) {
+		$fdopen--;
+	      }
 	    }
 	  }
 	  if(vec($rout, fileno(GETSTDOUT), 1)) {  # ready to read
+	    $gotread = 1;
 	    $s = sysread(GETSTDOUT, $self->{stdout}, $blocksize, $stdoutdone);
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stdoutdone += $s;  # number of bytes actually read
@@ -438,6 +471,7 @@ sub run {
 	    }
 	  }
 	  if(vec($rout, fileno(GETSTDERR), 1)) {  # ready to read
+	    $gotread = 1;
 	    $s = sysread(GETSTDERR, $self->{stderr}, $blocksize, $stderrdone);
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stderrdone += $s;  # number of bytes actually read
@@ -449,6 +483,9 @@ sub run {
 	  }
 	}
 	#print("bytes processed: $stdindone $stdoutdone $stderrdone\n");
+	#if($self->input_chunking() && scalar(@inputlines)) {
+	#  print(scalar(@inputlines) . " lines of stdin not fed\n");
+	#}
 	alarm(0);
 	return 1;
       };  # end of eval
@@ -671,6 +708,19 @@ and SIGKILL is then sent after the specified time only if the
 subprocess is still alive.
 This option can be disabled by setting to '0'.
 Values are in seconds, with a resolution of 0.01.
+
+=cut
+
+=item input_chunking
+
+If data is being written to the subprocess on stdin, this option will
+cause the module to split() the input data at linefeeds, and only feed
+the subprocess a line at a time.  This option typically would be used
+when the subprocess is an application with a command prompt and does
+not work properly when all the data is fed on stdin at once.
+The module will feed the subprocess one line of data on stdin, and
+will then wait until some data is produced by the subprocess on stdout
+or stderr.  It will then feed the next line of data on stdin.
 
 =cut
 
