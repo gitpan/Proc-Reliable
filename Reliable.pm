@@ -154,7 +154,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.15';
+$VERSION = '1.16';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
@@ -519,7 +519,7 @@ sub run {
 	    $gotread = 1;
 	    $s = sysread(GETSTDERR, $self->{stderr}, $blocksize, $stderrdone);
 		if ($cbStderr && $s) {
-			$oute .= substr($self->stdout, $stdoutdone);
+			$oute .= substr($self->stderr, $stderrdone);
 			my $lastcr = rindex($oute, "\n");
 			if ($lastcr >= 0) {
 				&$cbStderr("STDERR", substr($oute, 0, $lastcr + 1));
@@ -535,6 +535,18 @@ sub run {
 	    }
 	  }
 	}
+
+        # <robb@canfield.com> Clean up code to send any left over data to methods
+        # Send any left over data to methods
+        if ($cbStdout && $outs) {
+            &$cbStdout("STDOUT", $outs);
+            $outs = '';
+        }
+        if ($cbStderr && $oute) {
+            &$cbStderr("STDERR", $oute);
+            $oute = '';
+        }
+
 	#print("bytes processed: $stdindone $stdoutdone $stderrdone\n");
 	#if($self->input_chunking() && scalar(@inputlines)) {
 	#  print(scalar(@inputlines) . " lines of stdin not fed\n");

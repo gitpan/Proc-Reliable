@@ -1,5 +1,9 @@
 Revision history for Perl extension Proc::Reliable
 
+1.16  2003/11/24 02:00:00 dan goldwater / rob canfield
+	- fixed bugs with cb_stdout and cb_stderr
+	- added test_intercept.pl
+
 1.15  2003/11/7 16:00:00 dan goldwater
 	- fixed 1.14 regression
 
