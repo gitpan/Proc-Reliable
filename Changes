@@ -33,3 +33,6 @@ Revision history for Perl extension Proc::Reliable
 	- standardize packaging
 	- remove unused code
 
+1.04  2001/12/23 18:50:00 dan goldwater
+	- tweak docs
+

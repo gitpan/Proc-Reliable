@@ -72,15 +72,24 @@ Debug
 
 Proc::Reliable::debug($level);         # Turn debug on
 
-=head1 DESCRIPTION
+=head1 OVERVIEW
 
-The Proc::Reliable is intended to be a method for simple, reliable and
-configurable subprocess execution in PERL.  It includes all the
+Proc::Reliable is a class for simple, reliable and
+configurable subprocess execution in perl.  In particular, it is
+especially useful for managing the execution of 'problem' programs
+which are likely to fail, hang, or otherwise behave in an unruly manner.
+
+Proc::Reliable includes all the
 functionality of the backticks operator and system() functions, plus
-many uses of fork/exec, open2() and open3().
+many common uses of fork() and exec(), open2() and open3().
 Proc::Reliable incorporates a number of options, including 
 sending data to the subprocess on STDIN, collecting STDOUT and STDERR
 separately or together, killing hung processes, timouts and automatic retries.
+
+=cut
+
+=head1 DESCRIPTION
+
 A new process object is created by
 
    $myproc = Proc::Reliable->new();
@@ -141,7 +150,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.03';
+$VERSION = '1.04';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
