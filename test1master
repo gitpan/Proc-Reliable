@@ -12,7 +12,6 @@ BEGIN {
     push(@INC, $PROGRAMDIR);  # add program dir to module search path
 }
 
-
 use Proc::Reliable;
 
 $SIG{PIPE} = sub { print(STDERR "\n<SIGPIPE>\n"); };

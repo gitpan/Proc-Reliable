@@ -62,6 +62,8 @@ Option settings below represent defaults
  $p->sigkill_exit_time(0.5); # timeout for child to exit after sigkill
  $p->input_chunking(0);      # feed stdin data line-by-line to subprocess
  $p->stdin_error_ok(0);      # ok if child exits without reading all stdin
+ $p->stdout_cb(undef);       # callback function for line-by-line stdout
+ $p->stderr_cb(undef);       # callback function for line-by-line stderr
 
 Getting output
 
@@ -152,7 +154,7 @@ require Exporter;
 
 @ISA     = qw(Exporter AutoLoader);
 @EXPORT  = qw( );
-$VERSION = '1.13';
+$VERSION = '1.14';
 
 ######################################################################
 # Globals: Debug and the mysterious waitpid nohang constant.
@@ -177,6 +179,8 @@ my %intdefaults = ("maxtime"          => 60,
 		   "input_chunking"    => 0,
 		   "stdin_error_ok"    => 0,
 		   "in_after_out_closed" => 1,
+		   "stdout_cb"			=> undef,
+		   "stderr_cb"			=> undef,
 		  );
 
 ######################################################################
@@ -254,8 +258,12 @@ Program exit status is returned in the same format as exec():
 bits 0-7 set if program exited from a signal, bits 8-15 are the exit status
 on a normal program exit.
 
-There are a number of options.  You can also feed the forked program data
-on stdin via a second argument to run():
+You can also set up callbacks to run a function of your choice as
+each line of stdout and stderr is produced by the child process
+using the stdout_cb and stderr_cb options.
+
+There are a number of other options.
+You can also feed the forked program data on stdin via a second argument to run():
 
  $myinput = "hello\ntest\n";
  $output = $proc->run("program-name", $myinput);
@@ -395,6 +403,10 @@ sub run {
     STDOUT->flush();   # don't dup a non-empty buffer
     $redo = 0;
 
+    #jvr added
+    my($oldsigchld) = $SIG{CHLD};
+    $SIG{CHLD} = sub { $self->_collect_child(); };
+
     ##### PARENT PROCESS #####
     if($pid = fork()) {
       # close the ends of the pipes the child will be using
@@ -406,8 +418,6 @@ sub run {
 
       #print("sigs 1: ",$SIG{ALRM}," , ",$SIG{PIPE}," , ",$SIG{CHLD},"\n");
       # set up handler to collect child return status no matter when it dies
-      my($oldsigchld) = $SIG{CHLD};
-      $SIG{CHLD} = sub { $self->_collect_child(); };
 
       eval {
 	# exit the eval if child takes too long or dies abnormally
@@ -422,9 +432,9 @@ sub run {
 
 	# set up and do a select() to read/write the child to avoid deadlocks
 	my($stdinlen);
-	my($stdoutdone, $stderrdone, $stdindone);
+	my($stdoutdone, $stderrdone, $stdindone) = (0, 0, 0);
 	my($nfound, $fdopen, $bytestodo, $blocksize, $s);
-	my($rin, $rout, $win, $wout, $ein, $eout, $gotread);
+	my($rin, $rout, $win, $wout, $ein, $eout, $gotread) = (0, 0, 0, 0, 0, 0, 0);
 # bug: occational death with: 'Modification of a read-only value attempted at /home/public/dgold/acsim//Proc/Reliable.pm line 416.'
 	vec($rin, $fileno_getstdout, 1) = 1;
 	vec($rin, $fileno_getstderr, 1) = 1;
@@ -439,11 +449,14 @@ sub run {
 	  }
 	}
 	
+	my $cbStdout = $self->{stdout_cb};
+	my $cbStderr = $self->{stderr_cb};
+	my ($outs,$oute);
 	while($fdopen) {
 	  $nfound = select($rout=$rin, $wout=$win, $eout=$ein, undef);
-	  
-	  if(vec($wout, $fileno_putstdin, 1)) {  # ready to write
-	    #print("write ready\n");
+
+	  if(defined($win) && vec($wout, $fileno_putstdin, 1)) {  # ready to write
+	    print("write ready\n");
 	    my($indone) = 0;
 	    if($self->input_chunking()) {
 	      if($gotread) {
@@ -485,6 +498,14 @@ sub run {
 	  if(vec($rout, $fileno_getstdout, 1)) {  # ready to read
 	    $gotread = 1;
 	    $s = sysread(GETSTDOUT, $self->{stdout}, $blocksize, $stdoutdone);
+		if ($cbStdout && $s) {
+			$outs .= substr($self->stdout, $stdoutdone);
+			my $lastcr = rindex($outs, "\n");
+			if ($lastcr >= 0) {
+				&$cbStdout("STDOUT", substr($outs, 0, $lastcr + 1));
+				$outs = substr($outs, $lastcr + 1);
+			}
+		}
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stdoutdone += $s;  # number of bytes actually read
 	    unless($s) {
@@ -496,6 +517,14 @@ sub run {
 	  if(vec($rout, $fileno_getstderr, 1)) {  # ready to read
 	    $gotread = 1;
 	    $s = sysread(GETSTDERR, $self->{stderr}, $blocksize, $stderrdone);
+		if ($cbStderr && $s) {
+			$oute .= substr($self->stdout, $stdoutdone);
+			my $lastcr = rindex($oute, "\n");
+			if ($lastcr >= 0) {
+				&$cbStderr("STDERR", substr($oute, 0, $lastcr + 1));
+				$oute = substr($oute, $lastcr + 1);
+			}
+		}
 	    defined($s) || croak("failure reading from subprocess: $!");
 	    $stderrdone += $s;  # number of bytes actually read
 	    unless($s) {
@@ -566,6 +595,7 @@ sub run {
       }
 
       $SIG{CHLD} = $oldsigchld;
+
       #print("sigs 3: ",$SIG{ALRM}," , ",$SIG{PIPE}," , ",$SIG{CHLD},"\n");
       
       if(!defined($self->{status})) {
@@ -586,6 +616,9 @@ sub run {
 
     ##### CHILD PROCESS #####
     elsif(defined($pid)) {    # if child process: $pid == 0
+      #jvr added
+      $SIG{CHLD} = 'DEFAULT';
+
       close(GETSTDOUT); close(GETSTDERR);
       if(defined($inputref)) {
 	close(PUTSTDIN);
@@ -609,11 +642,11 @@ sub run {
       }
       elsif(ref($cmd) eq "ARRAY") {  # direct exec(), no shell parsing
 	exec(@$cmd);
-	croak("exec() failure: '$!'");
+	#croak("exec() failure: '$!'");  # causes warnings with '-w'
       }
       else {                         # start shell process
 	exec($cmd);
-	croak("exec() failure: '$!'");
+	#croak("exec() failure: '$!'");  # causes warnings with '-w'
       }
 
       # we get here for the perl subroutine normally.
@@ -758,6 +791,22 @@ or stderr.  It will then feed the next line of data on stdin.
 
 =cut
 
+=item stdout_cb
+
+Set up a callback function to get stdout data from the child line-by-line.
+The function you supply will be called whenever the child prints a line
+onto stdout.  This is the only way to get output from the child while it
+is still running, the normal method will give you all the output at once
+after the child exits.
+
+=cut
+
+=item stderr_cb
+
+Similar to stdout_cb for stderr data.
+
+=cut
+
 sub AUTOLOAD {
     my $self= shift; 
     my $type= ref($self) or croak("$self is not an object");
@@ -852,7 +901,7 @@ Proc::Reliable by Dan Goldwater <dgold at zblob dot com>
 
 Based on Proc::Short, written by John Hanju Kim <jhkim@fnal.gov>.
 
-Contributions by Stephen Cope.
+Contributions by Stephen Cope and Jason Robertson.
 
 =cut
 

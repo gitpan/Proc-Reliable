@@ -1,5 +1,10 @@
 Revision history for Perl extension Proc::Reliable
 
+1.14  2003/10/9 14:00:00 dan goldwater / jason robertson
+	- fixed known bug of fast-exiting children not getting detected
+	- added option for stdout and stderr callbacks
+	- cleaned up '-w' warnings
+
 1.13  2003/3/14 01:50:00 dan goldwater
 	- added stdin_error_ok option
 	- fix bug with killing processes
